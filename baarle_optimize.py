@@ -223,8 +223,8 @@ class BaarleNet(nn.Module):
         return self.output_layer(x)
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device):
-    """Train for one epoch."""
+def train_epoch(model, dataloader, criterion, optimizer, scheduler, device):
+    """Train for one epoch with optional LR scheduling."""
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -240,6 +240,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
         total_loss += loss.item()
         num_batches += 1
+
+    # Step the scheduler after each epoch
+    if scheduler is not None:
+        scheduler.step()
 
     return total_loss / num_batches
 
@@ -321,6 +325,11 @@ def train(config=None, use_wandb=True):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
 
+    # Cosine annealing learning rate scheduler
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=config.num_epochs, eta_min=config.learning_rate * 0.01
+    )
+
     # Training loop with plateau detection
     best_accuracy = 0.0
     epochs_without_improvement = 0
@@ -328,8 +337,9 @@ def train(config=None, use_wandb=True):
     min_delta = 0.001  # Minimum improvement threshold
 
     for epoch in range(config.num_epochs):
-        train_loss = train_epoch(model, dataloader, criterion, optimizer, device)
+        train_loss = train_epoch(model, dataloader, criterion, optimizer, scheduler, device)
         accuracy = evaluate(model, X, y, device)
+        current_lr = scheduler.get_last_lr()[0]
 
         # Check for improvement
         if accuracy > best_accuracy + min_delta:
@@ -345,6 +355,7 @@ def train(config=None, use_wandb=True):
                     "train_loss": train_loss,
                     "accuracy": accuracy,
                     "best_accuracy": best_accuracy,
+                    "learning_rate": current_lr,
                     "epochs_without_improvement": epochs_without_improvement,
                 }
             )
