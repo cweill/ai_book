@@ -1,0 +1,49 @@
+program: baarle_optimize.py
+method: bayes
+metric:
+  name: best_accuracy
+  goal: maximize
+
+parameters:
+  # Architecture parameters - constrained for <100 neurons
+  num_layers:
+    values: [1, 2, 3, 4, 5]
+  layer_width:
+    distribution: int_uniform
+    min: 8
+    max: 64
+  taper_ratio:
+    distribution: uniform
+    min: 0.5
+    max: 1.0
+
+  # Training hyperparameters
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+  batch_size:
+    values: [5000, 10000, 20000]
+  num_epochs:
+    values: [100, 200, 300]
+
+  # Architecture options
+  use_layer_norm:
+    values: [true, false]
+  use_skip_connections:
+    values: [true, false]
+  activation:
+    values: ["gelu", "relu", "silu"]
+
+  # Random seed for reproducibility
+  seed:
+    distribution: int_uniform
+    min: 0
+    max: 1000
+
+# Early terminate poorly performing runs
+early_terminate:
+  type: hyperband
+  min_iter: 20
+  eta: 3
+  s: 2
