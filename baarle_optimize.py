@@ -8,6 +8,7 @@ Uses wandb for hyperparameter sweeps.
 
 import argparse
 import io
+import math
 
 import cv2
 import matplotlib
@@ -153,40 +154,70 @@ class BaarleNet(nn.Module):
         # Input layer
         self.input_layer = nn.Linear(2, hidden_layers[0])
 
-        # Hidden layers
+        # Hidden layers with Pre-Norm architecture (like GPT-2)
+        # LayerNorm is applied BEFORE the linear layer, residual added AFTER
         self.hidden_layers = nn.ModuleList()
         self.layer_norms = nn.ModuleList()
         self.can_skip = []  # Track which layers can use skip connections
 
         for idx in range(len(hidden_layers) - 1):
+            # Pre-norm: LayerNorm on the INPUT to each layer
+            if use_layer_norm:
+                self.layer_norms.append(nn.LayerNorm(hidden_layers[idx]))
             self.hidden_layers.append(
                 nn.Linear(hidden_layers[idx], hidden_layers[idx + 1])
             )
-            if use_layer_norm:
-                self.layer_norms.append(nn.LayerNorm(hidden_layers[idx + 1]))
             # Only use skip when dimensions match (identity add, no projection matrix)
             self.can_skip.append(hidden_layers[idx] == hidden_layers[idx + 1])
+
+        # Final layer norm (applied before output layer if using layer norm)
+        self.final_ln = nn.LayerNorm(hidden_layers[-1]) if use_layer_norm else None
 
         # Output layer
         self.output_layer = nn.Linear(hidden_layers[-1], 2)
 
+        # Apply scaled initialization to residual projections (GPT-2 style)
+        self._init_weights()
+
+    def _init_weights(self):
+        """Apply special scaled init to layers that project into residual stream."""
+        # Count layers that actually use skip connections
+        num_residual_layers = sum(1 for can_skip in self.can_skip if can_skip)
+        if num_residual_layers > 0 and self.use_skip_connections:
+            scale = 1.0 / math.sqrt(2 * num_residual_layers)
+            for idx, (layer, can_skip) in enumerate(
+                zip(self.hidden_layers, self.can_skip)
+            ):
+                if can_skip:
+                    # Scale down weights for layers that feed into residual add
+                    nn.init.normal_(layer.weight, mean=0.0, std=0.02 * scale)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
+
     def forward(self, x):
-        """Forward pass through the network."""
+        """Forward pass with Pre-Norm architecture (GPT-2 style)."""
         # Input to first hidden layer
         x = self.input_layer(x)
 
-        # Hidden layers with optional skip connections
+        # Hidden layers with Pre-Norm: LN → Linear → Activation → Add residual
         for i, layer in enumerate(self.hidden_layers):
             identity = x
+
+            # Pre-norm: apply LayerNorm before the layer
+            if self.use_layer_norm:
+                x = self.layer_norms[i](x)
+
             out = self.activation(layer(x))
 
-            # Identity skip connection (no projection matrix)
+            # Identity skip connection (residual added AFTER sublayer)
             if self.use_skip_connections and self.can_skip[i]:
                 out = out + identity
 
-            if self.use_layer_norm and len(self.layer_norms) > i:
-                out = self.layer_norms[i](out)
             x = out
+
+        # Final layer norm before output
+        if self.final_ln is not None:
+            x = self.final_ln(x)
 
         # Output layer
         return self.output_layer(x)
